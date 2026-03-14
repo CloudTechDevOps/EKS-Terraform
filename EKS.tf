@@ -3,6 +3,20 @@ provider "aws" {
 }
 
 ############################
+# VARIABLES
+############################
+
+variable "my_ip" {
+  description = "Your public IP"
+  default     = "0.0.0.0/0" # Replace with your actual IP for better security
+}
+
+variable "key_name" {
+  description = "SSH keypair for bastion"
+  default     = "eks-key"
+}
+
+############################
 # VPC
 ############################
 
@@ -17,7 +31,7 @@ resource "aws_vpc" "eks_vpc" {
 }
 
 ############################
-# Internet Gateway
+# INTERNET GATEWAY
 ############################
 
 resource "aws_internet_gateway" "igw" {
@@ -29,7 +43,7 @@ resource "aws_internet_gateway" "igw" {
 }
 
 ############################
-# Public Subnets
+# PUBLIC SUBNETS
 ############################
 
 resource "aws_subnet" "public_subnet_1" {
@@ -39,7 +53,8 @@ resource "aws_subnet" "public_subnet_1" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "eks-public-subnet-1"
+    Name                     = "eks-public-subnet-1"
+    "kubernetes.io/role/elb" = "1"
   }
 }
 
@@ -50,12 +65,13 @@ resource "aws_subnet" "public_subnet_2" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name = "eks-public-subnet-2"
+    Name                     = "eks-public-subnet-2"
+    "kubernetes.io/role/elb" = "1"
   }
 }
 
 ############################
-# Private Subnets
+# PRIVATE SUBNETS
 ############################
 
 resource "aws_subnet" "private_subnet_1" {
@@ -64,7 +80,8 @@ resource "aws_subnet" "private_subnet_1" {
   availability_zone = "us-east-1a"
 
   tags = {
-    Name = "eks-private-subnet-1"
+    Name                              = "eks-private-subnet-1"
+    "kubernetes.io/role/internal-elb" = "1"
   }
 }
 
@@ -74,12 +91,13 @@ resource "aws_subnet" "private_subnet_2" {
   availability_zone = "us-east-1b"
 
   tags = {
-    Name = "eks-private-subnet-2"
+    Name                              = "eks-private-subnet-2"
+    "kubernetes.io/role/internal-elb" = "1"
   }
 }
 
 ############################
-# Elastic IP for NAT
+# ELASTIC IP
 ############################
 
 resource "aws_eip" "nat" {
@@ -87,22 +105,22 @@ resource "aws_eip" "nat" {
 }
 
 ############################
-# NAT Gateway
+# NAT GATEWAY
 ############################
 
 resource "aws_nat_gateway" "natgw" {
   allocation_id = aws_eip.nat.id
   subnet_id     = aws_subnet.public_subnet_1.id
 
+  depends_on = [aws_internet_gateway.igw]
+
   tags = {
     Name = "eks-nat-gateway"
   }
-
-  depends_on = [aws_internet_gateway.igw]
 }
 
 ############################
-# Public Route Table
+# ROUTE TABLES
 ############################
 
 resource "aws_route_table" "public_rt" {
@@ -112,15 +130,7 @@ resource "aws_route_table" "public_rt" {
     cidr_block = "0.0.0.0/0"
     gateway_id = aws_internet_gateway.igw.id
   }
-
-  tags = {
-    Name = "eks-public-rt"
-  }
 }
-
-############################
-# Private Route Table
-############################
 
 resource "aws_route_table" "private_rt" {
   vpc_id = aws_vpc.eks_vpc.id
@@ -129,14 +139,10 @@ resource "aws_route_table" "private_rt" {
     cidr_block     = "0.0.0.0/0"
     nat_gateway_id = aws_nat_gateway.natgw.id
   }
-
-  tags = {
-    Name = "eks-private-rt"
-  }
 }
 
 ############################
-# Route Table Associations
+# ROUTE ASSOCIATIONS
 ############################
 
 resource "aws_route_table_association" "public1" {
@@ -160,18 +166,24 @@ resource "aws_route_table_association" "private2" {
 }
 
 ############################
-# Security Group
+# SECURITY GROUP
 ############################
 
 resource "aws_security_group" "eks_sg" {
   vpc_id = aws_vpc.eks_vpc.id
 
   ingress {
-    description = "Cluster communication"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/16"]
+    cidr_blocks = [var.my_ip]
+  }
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.my_ip]
   }
 
   egress {
@@ -180,14 +192,31 @@ resource "aws_security_group" "eks_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
+
+############################
+# BASTION HOST
+############################
+resource "aws_key_pair" "eks_key" {
+  key_name   = var.key_name
+  public_key = file("~/.ssh/id_ed25519.pub")
+}
+resource "aws_instance" "bastion" {
+  ami                    = "ami-0c02fb55956c7d316"
+  instance_type          = "t3.micro"
+  subnet_id              = aws_subnet.public_subnet_1.id
+  key_name               = aws_key_pair.eks_key.key_name
+  vpc_security_group_ids = [aws_security_group.eks_sg.id]
+
+  associate_public_ip_address = true
 
   tags = {
-    Name = "eks-cluster-sg"
+    Name = "eks-bastion"
   }
 }
 
 ############################
-# IAM Role for EKS Cluster
+# IAM ROLE FOR EKS CLUSTER
 ############################
 
 resource "aws_iam_role" "master" {
@@ -211,7 +240,7 @@ resource "aws_iam_role_policy_attachment" "cluster_policy" {
 }
 
 ############################
-# IAM Role for Worker Nodes
+# IAM ROLE FOR WORKER NODES
 ############################
 
 resource "aws_iam_role" "worker" {
@@ -245,7 +274,7 @@ resource "aws_iam_role_policy_attachment" "ecr_policy" {
 }
 
 ############################
-# EKS Cluster
+# EKS CLUSTER
 ############################
 
 resource "aws_eks_cluster" "eks" {
@@ -254,15 +283,17 @@ resource "aws_eks_cluster" "eks" {
   version  = "1.29"
 
   vpc_config {
+
     subnet_ids = [
       aws_subnet.private_subnet_1.id,
       aws_subnet.private_subnet_2.id
     ]
 
-    endpoint_private_access = true
-    endpoint_public_access  = false
-
     security_group_ids = [aws_security_group.eks_sg.id]
+
+    endpoint_private_access = true
+    endpoint_public_access  = true
+    public_access_cidrs     = [var.my_ip]
   }
 
   depends_on = [
@@ -271,7 +302,7 @@ resource "aws_eks_cluster" "eks" {
 }
 
 ############################
-# EKS Node Group
+# NODE GROUP
 ############################
 
 resource "aws_eks_node_group" "node_group" {
