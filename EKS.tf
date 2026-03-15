@@ -1,3 +1,17 @@
+terraform {
+  required_providers {
+    aws = {
+      source = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+
+    helm = {
+      source = "hashicorp/helm"
+      version = "~> 2.9"
+    }
+  }
+}
+
 provider "aws" {
   region = "us-east-1"
 }
@@ -7,13 +21,7 @@ provider "aws" {
 ############################
 
 variable "my_ip" {
-  description = "Your public IP"
-  default     = "0.0.0.0/0" # Replace with your actual IP for better security
-}
-
-variable "key_name" {
-  description = "SSH keypair for bastion"
-  default     = "eks-key"
+  default = "0.0.0.0/0"
 }
 
 ############################
@@ -21,109 +29,77 @@ variable "key_name" {
 ############################
 
 resource "aws_vpc" "eks_vpc" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_support   = true
+
+  cidr_block = "10.0.0.0/16"
+
+  enable_dns_support = true
   enable_dns_hostnames = true
 
   tags = {
-    Name = "eks-prod-vpc"
+    Name = "eks-vpc"
   }
 }
-
-############################
-# INTERNET GATEWAY
-############################
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.eks_vpc.id
-
-  tags = {
-    Name = "eks-igw"
-  }
 }
 
 ############################
-# PUBLIC SUBNETS
+# SUBNETS
 ############################
 
-resource "aws_subnet" "public_subnet_1" {
-  vpc_id                  = aws_vpc.eks_vpc.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = "us-east-1a"
-  map_public_ip_on_launch = true
+resource "aws_subnet" "public1" {
 
-  tags = {
-    Name                     = "eks-public-subnet-1"
-    "kubernetes.io/role/elb" = "1"
-  }
-}
-
-resource "aws_subnet" "public_subnet_2" {
-  vpc_id                  = aws_vpc.eks_vpc.id
-  cidr_block              = "10.0.2.0/24"
-  availability_zone       = "us-east-1b"
-  map_public_ip_on_launch = true
-
-  tags = {
-    Name                     = "eks-public-subnet-2"
-    "kubernetes.io/role/elb" = "1"
-  }
-}
-
-############################
-# PRIVATE SUBNETS
-############################
-
-resource "aws_subnet" "private_subnet_1" {
-  vpc_id            = aws_vpc.eks_vpc.id
-  cidr_block        = "10.0.3.0/24"
+  vpc_id = aws_vpc.eks_vpc.id
+  cidr_block = "10.0.1.0/24"
   availability_zone = "us-east-1a"
 
-  tags = {
-    Name                              = "eks-private-subnet-1"
-    "kubernetes.io/role/internal-elb" = "1"
-  }
+  map_public_ip_on_launch = true
 }
 
-resource "aws_subnet" "private_subnet_2" {
-  vpc_id            = aws_vpc.eks_vpc.id
-  cidr_block        = "10.0.4.0/24"
+resource "aws_subnet" "public2" {
+
+  vpc_id = aws_vpc.eks_vpc.id
+  cidr_block = "10.0.2.0/24"
   availability_zone = "us-east-1b"
 
-  tags = {
-    Name                              = "eks-private-subnet-2"
-    "kubernetes.io/role/internal-elb" = "1"
-  }
+  map_public_ip_on_launch = true
+}
+
+resource "aws_subnet" "private1" {
+
+  vpc_id = aws_vpc.eks_vpc.id
+  cidr_block = "10.0.3.0/24"
+  availability_zone = "us-east-1a"
+}
+
+resource "aws_subnet" "private2" {
+
+  vpc_id = aws_vpc.eks_vpc.id
+  cidr_block = "10.0.4.0/24"
+  availability_zone = "us-east-1b"
 }
 
 ############################
-# ELASTIC IP
+# NAT
 ############################
 
 resource "aws_eip" "nat" {
   domain = "vpc"
 }
 
-############################
-# NAT GATEWAY
-############################
+resource "aws_nat_gateway" "nat" {
 
-resource "aws_nat_gateway" "natgw" {
   allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public_subnet_1.id
-
-  depends_on = [aws_internet_gateway.igw]
-
-  tags = {
-    Name = "eks-nat-gateway"
-  }
+  subnet_id = aws_subnet.public1.id
 }
 
 ############################
-# ROUTE TABLES
+# ROUTES
 ############################
 
-resource "aws_route_table" "public_rt" {
+resource "aws_route_table" "public" {
+
   vpc_id = aws_vpc.eks_vpc.id
 
   route {
@@ -132,98 +108,28 @@ resource "aws_route_table" "public_rt" {
   }
 }
 
-resource "aws_route_table" "private_rt" {
-  vpc_id = aws_vpc.eks_vpc.id
+resource "aws_route_table_association" "pub1" {
+  subnet_id = aws_subnet.public1.id
+  route_table_id = aws_route_table.public.id
+}
 
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.natgw.id
-  }
+resource "aws_route_table_association" "pub2" {
+  subnet_id = aws_subnet.public2.id
+  route_table_id = aws_route_table.public.id
 }
 
 ############################
-# ROUTE ASSOCIATIONS
+# IAM CLUSTER ROLE
 ############################
 
-resource "aws_route_table_association" "public1" {
-  subnet_id      = aws_subnet.public_subnet_1.id
-  route_table_id = aws_route_table.public_rt.id
-}
+resource "aws_iam_role" "cluster_role" {
 
-resource "aws_route_table_association" "public2" {
-  subnet_id      = aws_subnet.public_subnet_2.id
-  route_table_id = aws_route_table.public_rt.id
-}
-
-resource "aws_route_table_association" "private1" {
-  subnet_id      = aws_subnet.private_subnet_1.id
-  route_table_id = aws_route_table.private_rt.id
-}
-
-resource "aws_route_table_association" "private2" {
-  subnet_id      = aws_subnet.private_subnet_2.id
-  route_table_id = aws_route_table.private_rt.id
-}
-
-############################
-# SECURITY GROUP
-############################
-
-resource "aws_security_group" "eks_sg" {
-  vpc_id = aws_vpc.eks_vpc.id
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = [var.my_ip]
-  }
-
-  ingress {
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.my_ip]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-############################
-# BASTION HOST
-############################
-resource "aws_key_pair" "eks_key" {
-  key_name   = var.key_name
-  public_key = file("~/.ssh/id_ed25519.pub")
-}
-resource "aws_instance" "bastion" {
-  ami                    = "ami-0c02fb55956c7d316"
-  instance_type          = "t3.micro"
-  subnet_id              = aws_subnet.public_subnet_1.id
-  key_name               = aws_key_pair.eks_key.key_name
-  vpc_security_group_ids = [aws_security_group.eks_sg.id]
-
-  associate_public_ip_address = true
-
-  tags = {
-    Name = "eks-bastion"
-  }
-}
-
-############################
-# IAM ROLE FOR EKS CLUSTER
-############################
-
-resource "aws_iam_role" "master" {
-  name = "eks-master-role"
+  name = "eks-cluster-role"
 
   assume_role_policy = jsonencode({
+
     Version = "2012-10-17"
+
     Statement = [{
       Effect = "Allow"
       Principal = {
@@ -235,19 +141,24 @@ resource "aws_iam_role" "master" {
 }
 
 resource "aws_iam_role_policy_attachment" "cluster_policy" {
-  role       = aws_iam_role.master.name
+
+  role = aws_iam_role.cluster_role.name
+
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
 ############################
-# IAM ROLE FOR WORKER NODES
+# WORKER ROLE
 ############################
 
-resource "aws_iam_role" "worker" {
+resource "aws_iam_role" "worker_role" {
+
   name = "eks-worker-role"
 
   assume_role_policy = jsonencode({
+
     Version = "2012-10-17"
+
     Statement = [{
       Effect = "Allow"
       Principal = {
@@ -258,18 +169,24 @@ resource "aws_iam_role" "worker" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "worker_node_policy" {
-  role       = aws_iam_role.worker.name
+resource "aws_iam_role_policy_attachment" "worker_node" {
+
+  role = aws_iam_role.worker_role.name
+
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
 }
 
-resource "aws_iam_role_policy_attachment" "cni_policy" {
-  role       = aws_iam_role.worker.name
+resource "aws_iam_role_policy_attachment" "cni" {
+
+  role = aws_iam_role.worker_role.name
+
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
-resource "aws_iam_role_policy_attachment" "ecr_policy" {
-  role       = aws_iam_role.worker.name
+resource "aws_iam_role_policy_attachment" "ecr" {
+
+  role = aws_iam_role.worker_role.name
+
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
@@ -278,22 +195,21 @@ resource "aws_iam_role_policy_attachment" "ecr_policy" {
 ############################
 
 resource "aws_eks_cluster" "eks" {
-  name     = "project-eks"
-  role_arn = aws_iam_role.master.arn
-  version  = "1.29"
+
+  name = "project-eks"
+
+  role_arn = aws_iam_role.cluster_role.arn
+
+  version = var.cluster_version
 
   vpc_config {
 
     subnet_ids = [
-      aws_subnet.private_subnet_1.id,
-      aws_subnet.private_subnet_2.id
+      aws_subnet.private1.id,
+      aws_subnet.private2.id
     ]
 
-    security_group_ids = [aws_security_group.eks_sg.id]
-
-    endpoint_private_access = true
-    endpoint_public_access  = true
-    public_access_cidrs     = [var.my_ip]
+    endpoint_public_access = true
   }
 
   depends_on = [
@@ -306,26 +222,60 @@ resource "aws_eks_cluster" "eks" {
 ############################
 
 resource "aws_eks_node_group" "node_group" {
-  cluster_name    = aws_eks_cluster.eks.name
+
+  cluster_name = aws_eks_cluster.eks.name
+
   node_group_name = "eks-node-group"
-  node_role_arn   = aws_iam_role.worker.arn
+
+  node_role_arn = aws_iam_role.worker_role.arn
+
+  version = var.node_group_version
 
   subnet_ids = [
-    aws_subnet.private_subnet_1.id,
-    aws_subnet.private_subnet_2.id
+    aws_subnet.private1.id,
+    aws_subnet.private2.id
   ]
 
   instance_types = ["t3.medium"]
 
   scaling_config {
-    desired_size = 2
-    max_size     = 4
-    min_size     = 1
-  }
 
-  depends_on = [
-    aws_iam_role_policy_attachment.worker_node_policy,
-    aws_iam_role_policy_attachment.cni_policy,
-    aws_iam_role_policy_attachment.ecr_policy
-  ]
+    desired_size = 2
+    max_size = 4
+    min_size = 1
+  }
+}
+
+############################
+# EKS ADDONS
+############################
+
+resource "aws_eks_addon" "vpc_cni" {
+
+  cluster_name = aws_eks_cluster.eks.name
+  addon_name = "vpc-cni"
+}
+
+resource "aws_eks_addon" "coredns" {
+
+  cluster_name = aws_eks_cluster.eks.name
+  addon_name = "coredns"
+}
+
+resource "aws_eks_addon" "kube_proxy" {
+
+  cluster_name = aws_eks_cluster.eks.name
+  addon_name = "kube-proxy"
+}
+
+resource "aws_eks_addon" "pod_identity" {
+
+  cluster_name = aws_eks_cluster.eks.name
+  addon_name = "eks-pod-identity-agent"
+}
+
+resource "aws_eks_addon" "ebs_csi" {
+
+  cluster_name = aws_eks_cluster.eks.name
+  addon_name = "aws-ebs-csi-driver"
 }
